@@ -42,6 +42,11 @@ static int lfd;
 static int efd;
 static struct epoll_event events[MAXEVENTS];
 
+static int route_compare(const void *l, const void *r)
+{
+	return strcmp(((struct route *) l)->url, ((struct route *) r)->url);
+}
+
 static int create_and_bind(char *port)
 {
 	struct addrinfo hints;
@@ -151,13 +156,13 @@ done:
 	close(fd);
 }
 
-static void handle_client(struct epoll_event *evt)
+static void handle_client(int cfd)
 {
-	size_t i;
 	ssize_t count;
+	struct route needle, *route;
 	static char buf[512];
 
-	count = read(evt->data.fd, buf, sizeof(buf));
+	count = read(cfd, buf, sizeof(buf));
 	if (count < 0) {
 		perror("read");
 		goto done;
@@ -176,19 +181,19 @@ static void handle_client(struct epoll_event *evt)
 
 	*end = '\0';
 
-	for (i = 0; i < sizeof(routes) / sizeof(struct route); ++i) {
-		if (strcmp(routes[i].url, path) == 0) {
-			send_file(evt->data.fd, routes[i].fpath);
-			goto done;
+	needle.url = path;
+	route = bsearch(&needle, routes, sizeof(routes) / sizeof(struct route),
+			sizeof(struct route), route_compare);
+	if (route) {
+		send_file(cfd, route->fpath);
+	} else {
+		if (write(cfd, nourl, sizeof(nourl)) != sizeof(nourl)) {
+			perror("write");
 		}
 	}
 
-	if (write(evt->data.fd, nourl, sizeof(nourl)) != sizeof(nourl)) {
-		perror("write");
-	}
-
 done:
-	if (close(evt->data.fd) != 0) {
+	if (close(cfd) != 0) {
 		perror("close");
 	}
 }
@@ -241,7 +246,7 @@ static void serve(int lfd, int efd)
 		} else if (lfd == events[i].data.fd) {
 			while (accept_conn(lfd, efd) == 0);
 		} else {
-			handle_client(&events[i]);
+			handle_client(events[i].data.fd);
 		}
 	}
 }
@@ -287,6 +292,9 @@ int main()
 		perror("epoll_ctl");
 		return -1;
 	}
+
+	qsort(routes, sizeof(routes) / sizeof(struct route),
+			sizeof(struct route), route_compare);
 
 	for (;;) {
 		serve(lfd, efd);
