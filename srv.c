@@ -123,12 +123,10 @@ static void send_file(int cfd, char *fpath)
 
 	int fd = open(fpath, O_RDONLY, 0777);
 	if (fd < 0) {
-		send_404(cfd);
 		return;
 	}
 
 	if (fstat(fd, &sbuf) < 0) {
-		send_404(cfd);
 		goto done;
 	}
 
