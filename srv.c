@@ -26,8 +26,30 @@ struct route {
 };
 
 static struct route routes[] = {
-	{ "/", "index.html" },
-	{ "/about/", "about.html" }
+	{ "/", "www/index.html" },
+	{ "/about/", "www/about.html" },
+	{ "/research/", "www/research.html" },
+	{ "/static/vk.pubkey.asc", "www/vk.pubkey.asc" },
+	{ "/static/resume.pdf", "www/resume.pdf" },
+	{ "/static/loop-tx.pdf", "www/loop-tx.pdf" },
+	{ "/static/shape-analysis.pdf", "www/shape-analysis.pdf" },
+	{ "/static/picture.jpg", "www/picture.jpg" },
+	{ "/static/css/net.css", "www/net.css" },
+	{ "/static/js/circles.js", "www/circles.js" },
+	{ "/static/js/jquery.min.js", "www/jquery.min.js" },
+};
+
+struct mimetype {
+	char *fext;
+	char *mime;
+};
+
+static struct mimetype mimetypes[] = {
+	{ "jpg", "image/jpeg" },
+	{ "pdf", "application/pdf" },
+	{ "css", "text/css" },
+	{ "html", "text/html; charset=UTF-8" },
+	{ "asc", "text/plain; charset=UTF-8" },
 };
 
 static const char nourl[] =
@@ -44,7 +66,14 @@ static struct epoll_event events[MAXEVENTS];
 
 static int route_compare(const void *l, const void *r)
 {
-	return strcmp(((struct route *) l)->url, ((struct route *) r)->url);
+	return strcmp(((struct route *) l)->url,
+			((struct route *) r)->url);
+}
+
+static int mimetype_compare(const void *l, const void *r)
+{
+	return strcmp(((struct mimetype *) l)->fext,
+			((struct mimetype *) r)->fext);
 }
 
 static int create_and_bind(char *port)
@@ -120,6 +149,8 @@ static void send_file(int cfd, char *fpath)
 	off_t pos;
 	static char page[4096];
 	static struct stat sbuf;
+	char *extension;
+	struct mimetype needle, *mt = NULL;
 
 	int fd = open(fpath, O_RDONLY, 0777);
 	if (fd < 0) {
@@ -130,12 +161,25 @@ static void send_file(int cfd, char *fpath)
 		goto done;
 	}
 
+	extension = strrchr(fpath, '.');
+	if (extension) {
+		needle.fext = extension + 1;
+		mt = bsearch(&needle, mimetypes,
+				sizeof(mimetypes) / sizeof(struct mimetype),
+				sizeof(struct mimetype), mimetype_compare);
+	}
+
+	if (!mt) {
+		needle.mime = "text/html; charset=UTF-8";
+		mt = &needle;
+	}
+
 	clen = snprintf(page, sizeof(page),
 		"HTTP/1.0 200 OK\r\n"
-		"Content-Type: text/html; charset=UTF-8\r\n"
+		"Content-Type: %s\r\n"
 		"Connection: close\r\n"
 		"Content-Length: %td\r\n"
-		"\r\n", sbuf.st_size);
+		"\r\n", mt->mime, sbuf.st_size);
 
 	if (write(cfd, page, clen) != clen) {
 		goto done;
@@ -295,6 +339,9 @@ int main()
 
 	qsort(routes, sizeof(routes) / sizeof(struct route),
 			sizeof(struct route), route_compare);
+
+	qsort(mimetypes, sizeof(mimetypes) / sizeof(struct mimetype),
+			sizeof(struct mimetype), mimetype_compare);
 
 	for (;;) {
 		serve(lfd, efd);
