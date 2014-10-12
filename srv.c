@@ -34,7 +34,9 @@ static const char nourl[] =
 	"HTTP/1.0 404 Not Found\r\n"
 	"Content-Type: text/html; charset=UTF-8\r\n"
 	"Connection: close\r\n"
-	"Content-Length: 82\r\n";
+	"Content-Length: 12\r\n"
+	"\r\n"
+	"Oh no! 404.";
 
 static int lfd;
 static int efd;
@@ -107,13 +109,6 @@ static int make_nonblocking(int sfd)
 	return 0;
 }
 
-static void send_404(int cfd)
-{
-	if (write(cfd, nourl, sizeof(nourl)) != sizeof(nourl)) {
-		perror("write");
-	}
-}
-
 static void send_file(int cfd, char *fpath)
 {
 	int clen;
@@ -169,7 +164,6 @@ static void handle_client(struct epoll_event *evt)
 	}
 
 	if (count < 6) {
-		send_404(evt->data.fd);
 		goto done;
 	}
 
@@ -177,7 +171,6 @@ static void handle_client(struct epoll_event *evt)
 	char *end = strchr(path, ' ');
 
 	if (!end) {
-		send_404(evt->data.fd);
 		goto done;
 	}
 
@@ -188,6 +181,10 @@ static void handle_client(struct epoll_event *evt)
 			send_file(evt->data.fd, routes[i].fpath);
 			goto done;
 		}
+	}
+
+	if (write(evt->data.fd, nourl, sizeof(nourl)) != sizeof(nourl)) {
+		perror("write");
 	}
 
 done:
