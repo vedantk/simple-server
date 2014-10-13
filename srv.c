@@ -163,8 +163,8 @@ static uint64_t pack_fds(int fd1, int fd2)
 
 static void unpack_fds(uint64_t pair, int *fd1, int *fd2)
 {
-	*fd1 = pair >> 32;
-	*fd2 = pair & ((1ULL << 32) - 1);
+	*fd1 = (int) (pair >> 32);
+	*fd2 = (int) (pair & ((1ULL << 32) - 1));
 }
 
 static int enqueue_chunk(int cfd, int fd)
