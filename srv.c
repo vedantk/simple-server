@@ -121,6 +121,19 @@ static int make_listener(char *port)
 
 	freeaddrinfo(result);
 
+	if (getuid() == 0) {
+		if (setgid(100) != 0) {
+			fprintf(stderr, "setgid: %s", strerror(errno));
+			close(sfd);
+			abort();
+		}
+		if (setuid(1000) != 0) {
+			fprintf(stderr, "setuid: %s", strerror(errno));
+			close(sfd);
+			abort();
+		}
+	}
+
 	return sfd;
 }
 
@@ -175,7 +188,7 @@ static void send_chunk(int cfd, int fd)
 	static char page[4096];
 	struct stat sbuf;
 
-	if (fstat(fd, &sbuf) < 0) {
+	if (fcntl(fd, F_GETFD) < 0 || fstat(fd, &sbuf) < 0) {
 		goto done;
 	}
 
