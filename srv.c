@@ -188,16 +188,29 @@ static void send_chunk(int cfd, int fd)
 	static char page[4096];
 	struct stat sbuf;
 
-	if (fcntl(fd, F_GETFD) < 0 || fstat(fd, &sbuf) < 0) {
-		goto done;
+	if (fcntl(fd, F_GETFD) < 0) {
+		shutdown(cfd, SHUT_RDWR);
+		close(cfd);
+		return;
+	}
+
+	if (fstat(fd, &sbuf) < 0) {
+		perror("send_chunk/fstat");
+		goto fail;
 	}
 
 	pos = lseek(fd, 0, SEEK_CUR);
+	if (pos < 0) {
+		perror("send_chunk/lseek/1");
+		fprintf(stderr, "fd=%d, ino=%zu\n", fd, (size_t) sbuf.st_ino);
+		goto fail;
+	}
+
 	while (pos < sbuf.st_size) {
 		nread = read(fd, page, sizeof(page));
 		if (nread < 0) {
 			perror("send_chunk/read");
-			goto done;
+			goto fail;
 		}
 
 		nwritten = 0;
@@ -205,8 +218,8 @@ static void send_chunk(int cfd, int fd)
 			count = write(cfd, page + nwritten, nread - nwritten);
 			if (count < 0) {
 				if (lseek(fd, pos + nwritten, SEEK_SET) < 0) {
-					perror("send_chunk/lseek");
-					goto done;
+					perror("send_chunk/lseek/2");
+					goto fail;
 				}
 
 				if (errno == EAGAIN) {
@@ -214,7 +227,7 @@ static void send_chunk(int cfd, int fd)
 					return;
 				} else {
 					perror("send_chunk/write");
-					goto done;
+					goto fail;
 				}
 			}
 			nwritten += count;
@@ -222,10 +235,11 @@ static void send_chunk(int cfd, int fd)
 
 		pos += nread;
 	}
+
 	close(fd);
 	return;
 
-done:
+fail:
 	shutdown(cfd, SHUT_RDWR);
 	close(cfd);
 	close(fd);
@@ -266,8 +280,8 @@ static void send_file(int cfd, char *fpath)
 	clen = snprintf(page, sizeof(page),
 		"HTTP/1.0 200 OK\r\n"
 		"Content-Type: %s\r\n"
-		"Content-Length: %td\r\n"
-		"\r\n", mt->mime, sbuf.st_size);
+		"Content-Length: %zu\r\n"
+		"\r\n", mt->mime, (size_t) sbuf.st_size);
 
 	if (write(cfd, page, clen) != clen) {
 		perror("send_file/write");
@@ -277,6 +291,8 @@ static void send_file(int cfd, char *fpath)
 	if (enqueue_chunk(cfd, fd) != 0) {
 		goto fail;
 	}
+
+	printf("[200] %s\n", fpath);
 
 	return;
 
@@ -290,6 +306,7 @@ static void handle_client(int cfd)
 {
 	ssize_t count;
 	struct route needle, *route;
+	char *path, *end;
 	static char buf[512];
 
 	count = read(cfd, buf, sizeof(buf));
@@ -302,9 +319,12 @@ static void handle_client(int cfd)
 		goto done;
 	}
 
-	char *path = &buf[4];
-	char *end = strchr(path, ' ');
+	path = &buf[4];
+	if (*path != '/') {
+		goto done;
+	}
 
+	end = strchr(path, ' ');
 	if (!end) {
 		goto done;
 	}
