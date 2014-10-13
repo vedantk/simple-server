@@ -48,8 +48,8 @@ static struct mimetype mimetypes[] = {
 	{ "jpg", "image/jpeg" },
 	{ "pdf", "application/pdf" },
 	{ "css", "text/css" },
-	{ "html", "text/html; charset=UTF-8" },
 	{ "asc", "text/plain; charset=UTF-8" },
+	{ "html", "text/html; charset=UTF-8" },
 };
 
 static const char nourl[] =
@@ -76,7 +76,7 @@ static int mimetype_compare(const void *l, const void *r)
 			((struct mimetype *) r)->fext);
 }
 
-static int create_and_bind(char *port)
+static int make_listener(char *port)
 {
 	struct addrinfo hints;
 	struct addrinfo *result, *rp;
@@ -143,22 +143,98 @@ static int make_nonblocking(int sfd)
 	return 0;
 }
 
+static uint64_t pack_fds(int fd1, int fd2)
+{
+	return (((uint64_t) fd1) << 32) | ((uint64_t) fd2);
+}
+
+static void unpack_fds(uint64_t pair, int *fd1, int *fd2)
+{
+	*fd1 = pair >> 32;
+	*fd2 = pair & ((1ULL << 32) - 1);
+}
+
+static int enqueue_chunk(int cfd, int fd)
+{
+	struct epoll_event event;
+	event.data.u64 = pack_fds(cfd, fd);
+	event.events = EPOLLOUT | EPOLLET;
+	if (epoll_ctl(efd, EPOLL_CTL_MOD, cfd, &event) < 0) {
+		perror("epoll_ctl");
+		return -1;
+	}
+	return 0;
+}
+
+static void send_chunk(int cfd, int fd)
+{
+	off_t pos;
+	ssize_t count;
+	ssize_t nread;
+	ssize_t nwritten;
+	static char page[4096];
+	struct stat sbuf;
+
+	if (fstat(fd, &sbuf) < 0) {
+		goto done;
+	}
+
+	pos = lseek(fd, 0, SEEK_CUR);
+	while (pos < sbuf.st_size) {
+		nread = read(fd, page, sizeof(page));
+		if (nread < 0) {
+			perror("send_chunk/read");
+			goto done;
+		}
+
+		nwritten = 0;
+		while (nwritten < nread) {
+			count = write(cfd, page + nwritten, nread - nwritten);
+			if (count < 0) {
+				if (lseek(fd, pos + nwritten, SEEK_SET) < 0) {
+					perror("send_chunk/lseek");
+					goto done;
+				}
+
+				if (errno == EAGAIN) {
+					enqueue_chunk(cfd, fd);
+					return;
+				} else {
+					perror("send_chunk/write");
+					goto done;
+				}
+			}
+			nwritten += count;
+		}
+
+		pos += nread;
+	}
+	close(fd);
+	return;
+
+done:
+	shutdown(cfd, SHUT_RDWR);
+	close(cfd);
+	close(fd);
+}
+
 static void send_file(int cfd, char *fpath)
 {
 	int clen;
-	off_t pos;
-	static char page[4096];
-	static struct stat sbuf;
+	struct stat sbuf;
 	char *extension;
 	struct mimetype needle, *mt = NULL;
+	static char page[512];
 
-	int fd = open(fpath, O_RDONLY, 0777);
+	int fd = open(fpath, O_RDONLY);
 	if (fd < 0) {
+		perror("send_file/open");
 		return;
 	}
 
 	if (fstat(fd, &sbuf) < 0) {
-		goto done;
+		perror("send_file/fstat");
+		goto fail;
 	}
 
 	extension = strrchr(fpath, '.');
@@ -177,26 +253,23 @@ static void send_file(int cfd, char *fpath)
 	clen = snprintf(page, sizeof(page),
 		"HTTP/1.0 200 OK\r\n"
 		"Content-Type: %s\r\n"
-		"Connection: close\r\n"
 		"Content-Length: %td\r\n"
 		"\r\n", mt->mime, sbuf.st_size);
 
 	if (write(cfd, page, clen) != clen) {
-		goto done;
+		perror("send_file/write");
+		goto fail;
 	}
 
-	for (pos = 0; pos < sbuf.st_size; pos += sizeof(page)) {
-		clen = read(fd, page, sizeof(page));
-		if (clen < 0) {
-			goto done;
-		}
-
-		if (write(cfd, page, clen) != clen) {
-			goto done;
-		}
+	if (enqueue_chunk(cfd, fd) != 0) {
+		goto fail;
 	}
 
-done:
+	return;
+
+fail:
+	shutdown(cfd, SHUT_RDWR);
+	close(cfd);
 	close(fd);
 }
 
@@ -230,19 +303,19 @@ static void handle_client(int cfd)
 			sizeof(struct route), route_compare);
 	if (route) {
 		send_file(cfd, route->fpath);
+		return;
 	} else {
 		if (write(cfd, nourl, sizeof(nourl)) != sizeof(nourl)) {
-			perror("write");
+			perror("handle_client/write");
 		}
 	}
 
 done:
-	if (close(cfd) != 0) {
-		perror("close");
-	}
+	shutdown(cfd, SHUT_RDWR);
+	close(cfd);
 }
 
-static int accept_conn(int lfd, int efd)
+static int accept_conn()
 {
 	int cfd;
 	socklen_t in_len;
@@ -259,6 +332,7 @@ static int accept_conn(int lfd, int efd)
 	}
 
 	if (make_nonblocking(cfd) != 0) {
+		shutdown(cfd, SHUT_RDWR);
 		close(cfd);
 		return errno;
 	}
@@ -266,6 +340,7 @@ static int accept_conn(int lfd, int efd)
 	event.data.fd = cfd;
 	event.events = EPOLLIN | EPOLLET;
 	if (epoll_ctl(efd, EPOLL_CTL_ADD, cfd, &event) < 0) {
+		shutdown(cfd, SHUT_RDWR);
 		close(cfd);
 		perror("epoll_ctl");
 		return errno;
@@ -274,23 +349,34 @@ static int accept_conn(int lfd, int efd)
 	return 0;
 }
 
-static void serve(int lfd, int efd)
+static void serve()
 {
+	int cfd, fd;
 	int i, nr_events;
 	memset(&events, 0, MAXEVENTS * sizeof(struct epoll_event));
 
 	nr_events = epoll_wait(efd, events, MAXEVENTS, -1);
+	if (nr_events < 0) {
+		perror("epoll_wait");
+		abort();
+	}
 
 	for (i = 0; i < nr_events; i++) {
-		errno = 0;
-		if (events[i].events & (EPOLLERR | EPOLLHUP)) {
-			perror("epoll");
-			close(events[i].data.fd);
-			continue;
+		if (events[i].events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
+			if (events[i].events & EPOLLIN) {
+				close(events[i].data.fd);
+			} else if (events[i].events & EPOLLOUT) {
+				unpack_fds(events[i].data.u64, &cfd, &fd);
+				close(cfd);
+				close(fd);
+			}
 		} else if (lfd == events[i].data.fd) {
-			while (accept_conn(lfd, efd) == 0);
-		} else {
+			while (accept_conn() == 0);
+		} else if (events[i].events & EPOLLIN) {
 			handle_client(events[i].data.fd);
+		} else if (events[i].events & EPOLLOUT) {
+			unpack_fds(events[i].data.u64, &cfd, &fd);
+			send_chunk(cfd, fd);
 		}
 	}
 }
@@ -307,7 +393,7 @@ int main()
 	struct sigaction action;
 	struct epoll_event event;
 
-	lfd = create_and_bind(PORT);
+	lfd = make_listener(PORT);
 
 	memset(&action, 0, sizeof(struct sigaction));
 	action.sa_handler = exit_handler;
@@ -344,7 +430,7 @@ int main()
 			sizeof(struct mimetype), mimetype_compare);
 
 	for (;;) {
-		serve(lfd, efd);
+		serve();
 	}
 	return -1;
 }
