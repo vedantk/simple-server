@@ -268,7 +268,7 @@ static void send_file(int cfd, char *fpath)
 	}
 
 	if (!mt) {
-		needle.mime = "text/html; charset=UTF-8";
+		needle.mime = "text/plain; charset=UTF-8";
 		mt = &needle;
 	}
 
