@@ -18,7 +18,7 @@
 #include <netdb.h>
 
 #define PORT "80"
-#define MAXEVENTS 64
+#define MAXEVENTS 32
 
 struct route {
 	char *url;
@@ -107,7 +107,6 @@ static int make_listener(char *port)
 
 		s = bind(sfd, rp->ai_addr, rp->ai_addrlen);
 		if (s == 0) {
-			printf("Bound to %s:%s\n", rp->ai_canonname, PORT);
 			break;
 		}
 
@@ -188,29 +187,26 @@ static void send_chunk(int cfd, int fd)
 	static char page[4096];
 	struct stat sbuf;
 
-	if (fcntl(fd, F_GETFD) < 0) {
-		shutdown(cfd, SHUT_RDWR);
-		close(cfd);
-		return;
-	}
-
 	if (fstat(fd, &sbuf) < 0) {
 		perror("send_chunk/fstat");
-		goto fail;
+		goto done;
 	}
 
 	pos = lseek(fd, 0, SEEK_CUR);
 	if (pos < 0) {
 		perror("send_chunk/lseek/1");
-		fprintf(stderr, "fd=%d, ino=%zu\n", fd, (size_t) sbuf.st_ino);
-		goto fail;
+		goto done;
+	}
+
+	if (pos == sbuf.st_size) {
+		goto done;
 	}
 
 	while (pos < sbuf.st_size) {
 		nread = read(fd, page, sizeof(page));
 		if (nread < 0) {
 			perror("send_chunk/read");
-			goto fail;
+			goto done;
 		}
 
 		nwritten = 0;
@@ -219,7 +215,7 @@ static void send_chunk(int cfd, int fd)
 			if (count < 0) {
 				if (lseek(fd, pos + nwritten, SEEK_SET) < 0) {
 					perror("send_chunk/lseek/2");
-					goto fail;
+					goto done;
 				}
 
 				if (errno == EAGAIN) {
@@ -227,7 +223,7 @@ static void send_chunk(int cfd, int fd)
 					return;
 				} else {
 					perror("send_chunk/write");
-					goto fail;
+					goto done;
 				}
 			}
 			nwritten += count;
@@ -236,10 +232,9 @@ static void send_chunk(int cfd, int fd)
 		pos += nread;
 	}
 
-	close(fd);
 	return;
 
-fail:
+done:
 	shutdown(cfd, SHUT_RDWR);
 	close(cfd);
 	close(fd);
@@ -291,8 +286,6 @@ static void send_file(int cfd, char *fpath)
 	if (enqueue_chunk(cfd, fd) != 0) {
 		goto fail;
 	}
-
-	printf("[200] %s\n", fpath);
 
 	return;
 
@@ -400,8 +393,8 @@ static void serve()
 				close(events[i].data.fd);
 			} else if (events[i].events & EPOLLOUT) {
 				unpack_fds(events[i].data.u64, &cfd, &fd);
+				shutdown(cfd, SHUT_RDWR);
 				close(cfd);
-				close(fd);
 			}
 		} else if (lfd == events[i].data.fd) {
 			while (accept_conn() == 0);
