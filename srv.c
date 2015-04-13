@@ -311,7 +311,7 @@ static void handle_client(int cfd)
 	char *path, *end;
 	static char buf[512];
 
-	count = read(cfd, buf, sizeof(buf));
+	count = read(cfd, buf, sizeof(buf) - 1);
 	if (count < 0) {
 		perror("read");
 		goto done;
@@ -326,6 +326,7 @@ static void handle_client(int cfd)
 		goto done;
 	}
 
+	buf[sizeof(buf) - 1] = '\0';
 	end = strchr(path, ' ');
 	if (!end) {
 		goto done;
