@@ -309,7 +309,7 @@ static void handle_client(int cfd)
 	ssize_t count;
 	struct route needle, *route;
 	char *path, *end;
-	static char buf[512];
+	static char buf[1024];
 
 	count = read(cfd, buf, sizeof(buf) - 1);
 	if (count < 0) {
@@ -326,7 +326,7 @@ static void handle_client(int cfd)
 		goto done;
 	}
 
-	buf[sizeof(buf) - 1] = '\0';
+	buf[count] = '\0';
 	end = strchr(path, ' ');
 	if (!end) {
 		goto done;
