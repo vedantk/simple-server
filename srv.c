@@ -219,7 +219,9 @@ static void send_chunk(int cfd, int fd)
 				}
 
 				if (errno == EAGAIN) {
-					enqueue_chunk(cfd, fd);
+					if (enqueue_chunk(cfd, fd) != 0) {
+						goto done;
+					}
 					return;
 				} else {
 					perror("send_chunk/write");
@@ -232,6 +234,10 @@ static void send_chunk(int cfd, int fd)
 		pos += nread;
 	}
 
+	/* Closing a TCP connection requires space in the outgoing sk_buff. */
+	if (enqueue_chunk(cfd, fd) != 0) {
+		goto done;
+	}
 	return;
 
 done:
@@ -395,6 +401,7 @@ static void serve()
 				unpack_fds(events[i].data.u64, &cfd, &fd);
 				shutdown(cfd, SHUT_RDWR);
 				close(cfd);
+				close(fd);
 			}
 		} else if (lfd == events[i].data.fd) {
 			while (accept_conn() == 0);
