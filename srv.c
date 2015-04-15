@@ -241,6 +241,7 @@ static void send_chunk(int cfd, int fd)
 	if (enqueue_chunk(cfd, fd) != 0) {
 		goto done;
 	}
+
 	return;
 
 done:
@@ -309,9 +310,9 @@ static void handle_client(int cfd)
 	ssize_t count;
 	struct route needle, *route;
 	char *path, *end;
-	static char buf[1024];
+	static char buf[512];
 
-	count = read(cfd, buf, sizeof(buf) - 1);
+	count = read(cfd, buf, sizeof(buf));
 	if (count < 0) {
 		perror("read");
 		goto done;
@@ -326,8 +327,7 @@ static void handle_client(int cfd)
 		goto done;
 	}
 
-	buf[count] = '\0';
-	end = strchr(path, ' ');
+	end = memchr(path, ' ', count);
 	if (!end) {
 		goto done;
 	}
