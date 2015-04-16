@@ -261,12 +261,12 @@ static void send_file(int cfd, char *fpath)
 	int fd = open(fpath, O_RDONLY);
 	if (fd < 0) {
 		perror("send_file/open");
-		return;
+		goto fail1;
 	}
 
 	if (fstat(fd, &sbuf) < 0) {
 		perror("send_file/fstat");
-		goto fail;
+		goto fail0;
 	}
 
 	extension = strrchr(fpath, '.');
@@ -290,19 +290,20 @@ static void send_file(int cfd, char *fpath)
 
 	if (write(cfd, page, clen) != clen) {
 		perror("send_file/write");
-		goto fail;
+		goto fail0;
 	}
 
 	if (enqueue_chunk(cfd, fd) != 0) {
-		goto fail;
+		goto fail0;
 	}
 
 	return;
 
-fail:
+fail0:
+	close(fd);
+fail1:
 	shutdown(cfd, SHUT_RDWR);
 	close(cfd);
-	close(fd);
 }
 
 static void handle_client(int cfd)
