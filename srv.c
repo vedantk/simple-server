@@ -256,7 +256,7 @@ static void send_file(int cfd, char *fpath)
 	struct stat sbuf;
 	char *extension;
 	struct mimetype needle, *mt = NULL;
-	static char page[512];
+	static char buf[512];
 
 	int fd = open(fpath, O_RDONLY);
 	if (fd < 0) {
@@ -282,13 +282,13 @@ static void send_file(int cfd, char *fpath)
 		mt = &needle;
 	}
 
-	clen = snprintf(page, sizeof(page),
+	clen = snprintf(buf, sizeof(buf),
 		"HTTP/1.0 200 OK\r\n"
 		"Content-Type: %s\r\n"
 		"Content-Length: %zu\r\n"
 		"\r\n", mt->mime, (size_t) sbuf.st_size);
 
-	if (write(cfd, page, clen) != clen) {
+	if (write(cfd, buf, clen) != clen) {
 		perror("send_file/write");
 		goto fail0;
 	}
@@ -311,7 +311,7 @@ static void handle_client(int cfd)
 	ssize_t count;
 	struct route needle, *route;
 	char *path, *end;
-	static char buf[512];
+	static char buf[4096];
 
 	count = read(cfd, buf, sizeof(buf));
 	if (count < 0) {
