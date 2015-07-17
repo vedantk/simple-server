@@ -457,6 +457,7 @@ int main()
 	event.data.fd = lfd;
 	event.events = EPOLLIN;
 	if (epoll_ctl(efd, EPOLL_CTL_ADD, lfd, &event) < 0) {
+		close(lfd);
 		perror("epoll_ctl");
 		return -1;
 	}
