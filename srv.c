@@ -102,7 +102,8 @@ static int make_listener(char *port)
 			continue;
 		}
 
-		s = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &s, sizeof(int));
+		int one = 1;
+		s = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(int));
 		if (s != 0) {
 			perror("setsockopt");
 			abort();
@@ -158,6 +159,10 @@ static int make_nonblocking(int sfd)
 	return 0;
 }
 
+/*
+ * Pack two 32-bit file descriptors into a single 64-bit integer --
+ * a trick to avoid malloc/free calls in the epoll loop.
+ */
 static uint64_t pack_fds(int fd1, int fd2)
 {
 	return (((uint64_t) fd1) << 32) | ((uint64_t) fd2);
@@ -226,6 +231,11 @@ static void send_chunk(int cfd, int fd)
 						goto done;
 					}
 					return;
+				} else if (errno == EPIPE || errno == ECONNRESET) {
+					/*
+					 * Client closed the connection.
+					 */
+					goto done;
 				} else {
 					perror("send_chunk/write");
 					goto done;
@@ -394,8 +404,10 @@ static void serve()
 
 	nr_events = epoll_wait(efd, events, MAXEVENTS, -1);
 	if (nr_events < 0) {
+		if (errno == EINTR) {
+			return;
+		}
 		perror("epoll_wait");
-		abort();
 	}
 
 	for (i = 0; i < nr_events; i++) {
@@ -430,6 +442,10 @@ int main()
 {
 	struct sigaction action;
 	struct epoll_event event;
+
+	struct sigaction ig = {0};
+	ig.sa_handler = SIG_IGN;
+	sigaction(SIGPIPE, &ig, NULL);
 
 	lfd = make_listener(PORT);
 
