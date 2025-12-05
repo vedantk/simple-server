@@ -16,6 +16,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netdb.h>
+#include <limits.h>
 
 #define PORT "80"
 #define MAXEVENTS 32
@@ -25,22 +26,8 @@ struct route {
 	char *fpath;
 };
 
-static struct route routes[] = {
-	{ "/", "www/index.html" },
-	{ "/about/", "www/about.html" },
-	{ "/research/", "www/research.html" },
-	{ "/static/vk.pubkey.asc", "www/vk.pubkey.asc" },
-	{ "/static/resume.pdf", "www/resume.pdf" },
-	{ "/static/loop-tx.pdf", "www/loop-tx.pdf" },
-	{ "/static/llvm-loop-diag.pdf", "www/llvm-loop-diag.pdf" },
-	{ "/static/shape-analysis.pdf", "www/shape-analysis.pdf" },
-	{ "/static/fs-overview.pdf", "www/fs-overview.pdf" },
-	{ "/static/picture.jpg", "www/picture.jpg" },
-	{ "/static/cal-lwt-n8.jpg", "www/cal-lwt-n8.jpg" },
-	{ "/static/css/net.css", "www/net.css" },
-	{ "/static/js/circles.js", "www/circles.js" },
-	{ "/static/js/jquery.min.js", "www/jquery.min.js" },
-};
+static struct route *routes = NULL;
+static size_t routes_count = 0;
 
 struct mimetype {
 	char *fext;
@@ -77,6 +64,110 @@ static int mimetype_compare(const void *l, const void *r)
 {
 	return strcmp(((struct mimetype *) l)->fext,
 			((struct mimetype *) r)->fext);
+}
+
+static void parse_routes_file(const char *filename, struct route **routes_out,
+		size_t *count_out)
+{
+	FILE *fp;
+	char line[4096];
+	size_t capacity = 64;
+	size_t count = 0;
+	struct route *routes_arr;
+	char *arrow;
+	char *newline;
+	char *url;
+	char *fpath;
+	size_t url_len;
+
+	fp = fopen(filename, "r");
+	if (!fp) {
+		fprintf(stderr, "Failed to open %s: %s\n",
+				filename, strerror(errno));
+		abort();
+	}
+
+	routes_arr = malloc(capacity * sizeof(struct route));
+	if (!routes_arr) {
+		perror("malloc");
+		abort();
+	}
+
+	while (fgets(line, sizeof(line), fp)) {
+		newline = strchr(line, '\n');
+		if (newline) {
+			*newline = '\0';
+		}
+
+		if (line[0] == '\0') {
+			continue;
+		}
+
+		arrow = strstr(line, " -> ");
+		if (!arrow || line[0] != '/') {
+			fprintf(stderr, "bad route: %s\n", line);
+			continue;
+		}
+
+		url = line;
+		url_len = arrow - line;
+
+		fpath = arrow + 4;
+
+		if (strstr(fpath, "..") || strncmp(fpath, "www/", 4) != 0) {
+			fprintf(stderr, "bad route: %s\n", line);
+			continue;
+		}
+
+		if (count >= capacity) {
+			capacity *= 2;
+			struct route *tmp = realloc(routes_arr,
+					capacity * sizeof(struct route));
+			if (!tmp) {
+				perror("realloc");
+				abort();
+			}
+			routes_arr = tmp;
+		}
+
+		routes_arr[count].url = strndup(url, url_len);
+		routes_arr[count].fpath = strdup(fpath);
+
+		if (!routes_arr[count].url || !routes_arr[count].fpath) {
+			perror("strndup");
+			abort();
+		}
+
+		fprintf(stderr, "add route: %s -> %s\n",
+				routes_arr[count].url, routes_arr[count].fpath);
+
+		count++;
+	}
+
+	fclose(fp);
+
+	*routes_out = routes_arr;
+	*count_out = count;
+}
+
+static void build_routes(void)
+{
+	parse_routes_file("www/routes.txt", &routes, &routes_count);
+
+	qsort(routes, routes_count, sizeof(struct route), route_compare);
+
+	size_t i;
+	for (i = 0; i < routes_count - 1; i++) {
+		if (strcmp(routes[i].url, routes[i + 1].url) == 0) {
+			fprintf(stderr, "Duplicate URL detected: %s\n",
+					routes[i].url);
+			fprintf(stderr, "  First:  %s -> %s\n",
+					routes[i].url, routes[i].fpath);
+			fprintf(stderr, "  Second: %s -> %s\n",
+					routes[i + 1].url, routes[i + 1].fpath);
+			abort();
+		}
+	}
 }
 
 static int make_listener(char *port)
@@ -346,7 +437,7 @@ static void handle_client(int cfd)
 	*end = '\0';
 
 	needle.url = path;
-	route = bsearch(&needle, routes, sizeof(routes) / sizeof(struct route),
+	route = bsearch(&needle, routes, routes_count,
 			sizeof(struct route), route_compare);
 	if (route) {
 		send_file(cfd, route->fpath);
@@ -454,7 +545,6 @@ int main()
 	sigaction(SIGTERM, &action, NULL);
 
 	if (make_nonblocking(lfd) != 0) {
-		close(lfd);
 		return -1;
 	}
 
@@ -466,7 +556,6 @@ int main()
 	efd = epoll_create(MAXEVENTS);
 	if (efd < 0) {
 		perror("epoll_create");
-		close(lfd);
 		return -1;
 	}
 
@@ -478,8 +567,7 @@ int main()
 		return -1;
 	}
 
-	qsort(routes, sizeof(routes) / sizeof(struct route),
-			sizeof(struct route), route_compare);
+	build_routes();
 
 	qsort(mimetypes, sizeof(mimetypes) / sizeof(struct mimetype),
 			sizeof(struct mimetype), mimetype_compare);
